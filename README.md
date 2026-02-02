@@ -6,14 +6,14 @@
 
 </div>
 
-Use Google's internal Cloud Code API (`daily-cloudcode-pa`) via a standard OpenAI-compatible interface. This Cloudflare Worker acts as a proxy/wrapper, handling the complex internal protocol details like Project ID discovery, request wrapping, and model mapping.
+A unified API gateway that provides an OpenAI-compatible interface for accessing Antigravity services. This Cloudflare Worker handles authentication, session management, and model adaptation, acting as a bridge between standard AI clients and the backend.
 
 ## Features
 
-- **Internal API Access**: Unlocks access to Google's internal `daily-cloudcode-pa.sandbox.googleapis.com` API using standard Google OAuth credentials.
+- **Unified API Access**: Seamlessly connects to Antigravity backend services.
 - **OpenAI Compatibility**: Provides a `/v1/chat/completions` endpoint that works with existing OpenAI clients.
-- **Auto Project ID**: Automatically discovers the user's Google Cloud Project ID required for the internal API using `loadCodeAssist`.
-- **Model Mapping**: Automatically maps public model names (e.g., `gemini-2.0-flash-exp`) to their internal counterparts (e.g., `gemini-3-flash`).
+- **Auto Configuration**: Automatically manages project context and connectivity details.
+- **Model Mapping**: Automatically maps public model names (e.g., `gemini-2.0-flash-exp`) to the appropriate backend models.
 - **Streaming Support**: Full Server-Sent Events (SSE) support for real-time responses.
 - **Authentication**: Built-in `/auth` page for easy Google OAuth linking and token management.
 
@@ -73,13 +73,13 @@ You can now use any OpenAI-compatible client (e.g., cursor, vscode, python-opena
 - **API Key**: `any-string` (The worker uses the internal session for auth, but most clients require a non-empty key).
 
 ### 3. Supported Models
-The worker automatically maps these public model names to internal Google models:
+The worker automatically maps these public model names to the backend models:
 
-| Public Name | Internal Mapping |
-|-------------|------------------|
-| `gemini-2.0-flash-exp` | `gemini-3-flash` |
-| `gemini-pro` | `gemini-3-pro-high` |
-| `claude-3-5-sonnet` | `claude-sonnet-4-5` |
+| Public Name |
+|-------------|
+| `gemini-2.0-flash-exp` |
+| `gemini-pro` |
+| `claude-3-5-sonnet` |
 
 ### 4. Example Request (cURL)
 ```bash
@@ -103,4 +103,4 @@ The `wrangler.toml` file controls the Worker's configuration.
 > The default `wrangler.toml` contains a placeholder KV ID. You **MUST** replace it with your own ID generated in step 4 of Installation.
 
 ## Disclaimer
-This tool is for educational and research purposes only. It interacts with internal Google APIs which may change or break at any time. Use at your own risk.
+This tool is for educational and research purposes only. Use at your own risk.

@@ -1,4 +1,4 @@
-# Antigravity Auth to API (Google 内网 API 鉴权代理)
+# Antigravity Auth to API
 
 <div align="center">
 
@@ -6,14 +6,14 @@
 
 </div>
 
-通过标准的 OpenAI 兼容接口调用 Google 内部的 Cloud Code API (`daily-cloudcode-pa`)。这也是一个 Cloudflare Worker 项目，作为代理/封装层，处理 Project ID 获取、请求封装和模型映射等复杂的内部协议细节。
+一个统一的 API 网关，提供与 OpenAI 兼容的接口，用于访问 Antigravity 服务。该 Cloudflare Worker 负责处理身份验证、会话管理和模型适配，作为标准 AI 客户端与后端服务之间的桥梁。
 
 ## 功能特性
 
-- **内部 API 访问**: 解锁对 Google 内部 `daily-cloudcode-pa.sandbox.googleapis.com` API 的访问权限。
+- **统一 API 访问**: 无缝连接 Antigravity 后端服务。
 - **OpenAI 兼容性**: 提供标准的 `/v1/chat/completions` 接口，可直接接入现有的 OpenAI 客户端。
-- **自动 Project ID**: 使用 `loadCodeAssist` 接口自动获取内部 API 所需的 Google Cloud Project ID。
-- **模型映射**: 自动将公共模型名称 (如 `gemini-2.0-flash-exp`) 映射到内部 ID (如 `gemini-3-flash`)。
+- **自动配置**: 自动管理项目上下文和连接细节。
+- **模型映射**: 自动将公共模型名称 (如 `gemini-2.0-flash-exp`) 映射到后端对应模型。
 - **流式支持**: 完整支持 Server-Sent Events (SSE) 流式响应。
 - **身份验证**: 内置 `/auth` 页面，方便进行 Google OAuth 授权和 Token 管理。
 
@@ -73,13 +73,13 @@
 - **API Key**: `any-string` (Worker 内部使用 Session 认证，但大多数客户端需要填入非空字符串)。
 
 ### 3. 支持的模型
-Worker 会自动将以下公共模型名称映射到 Google 内部模型 ID：
+Worker 会自动将以下公共模型名称映射到后端模型：
 
-| 公共名称 | 内部映射 |
-|-------------|------------------|
-| `gemini-2.0-flash-exp` | `gemini-3-flash` |
-| `gemini-pro` | `gemini-3-pro-high` |
-| `claude-3-5-sonnet` | `claude-sonnet-4-5` |
+| 公共名称 |
+|-------------|
+| `gemini-2.0-flash-exp` |
+| `gemini-pro` |
+| `claude-3-5-sonnet` |
 
 ### 4. 请求示例 (cURL)
 ```bash
@@ -103,4 +103,4 @@ curl -X POST https://your-worker.workers.dev/v1/chat/completions \
 > 默认的 `wrangler.toml` 包含一个占位符 KV ID。你**必须**将其替换为你自己在第 4 步中生成的 ID。
 
 ## 免责声明
-本工具仅供学习和研究使用。它调用了 Google 的内部 API 接口，这些接口随时可能更改或失效。使用风险自负。
+本工具仅供学习和研究使用。使用风险自负。
