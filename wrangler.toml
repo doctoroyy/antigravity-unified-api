@@ -1,0 +1,8 @@
+name = "antigravity-auth-to-api"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# KV Namespace for session storage
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "dca0774e72824b83ab1f3f9323cf2ed0"
