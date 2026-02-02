@@ -3,6 +3,9 @@ import { ChatMessage, ContentObject, ContentPart } from './types';
 
 export function inferProvider(model: string): "google" | "anthropic" {
   const m = model.toLowerCase();
+  // Internal Antigravity Claude models must be routed to Google
+  if (m === "claude-sonnet-4-5") return "google";
+  
   if (m.includes("claude") || m.includes("anthropic")) return "anthropic";
   if (m.includes("gemini") || m.includes("google") || m.includes("palm") || m.includes("codey")) return "google";
   return "google";
