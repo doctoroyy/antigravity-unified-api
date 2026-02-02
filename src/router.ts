@@ -137,17 +137,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   }
 
   // Model Mapping for Internal API
-  const MODEL_MAP: Record<string, string> = {
-    "gemini-2.0-flash-exp": "gemini-3-flash",
-    "gemini-2.0-flash": "gemini-3-flash",
-    "gemini-flash": "gemini-3-flash",
-    "gemini-pro": "gemini-3-pro-high",
-    "gemini-1.5-pro": "gemini-3-pro-high"
-  };
+  console.log(`[Router] Resolving model for: ${model}`);
+  const originalModel = model;
+  const mappedModel = (await import('./model_mapping')).resolveModel(model);
   
-  if (MODEL_MAP[model]) {
-    console.log(`[Router] Mapping model ${model} -> ${MODEL_MAP[model]}`);
-    model = MODEL_MAP[model];
+  if (mappedModel !== originalModel) {
+    console.log(`[Router] Mapping model ${originalModel} -> ${mappedModel}`);
+    model = mappedModel;
   }
 
   const provider = adapter.inferProvider(model);
@@ -268,13 +264,21 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     };
 
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+        "User-Agent": "antigravity"
+      };
+
+      // [New] Inject Beta Headers for Thinking + Tools (Legacy Reference Support)
+      if (reqBody.tools && (model.includes("thinking") || (reqBody.thinking as any)?.type === "enabled")) {
+           console.log(`[Google] Injecting anthropic-beta header for thinking + tools`);
+           headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+      }
+
       const upstreamResp = await fetch(upstreamUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${accessToken}`,
-          "User-Agent": "antigravity"
-        },
+        headers,
         body: JSON.stringify(wrappedBody)
       });
 

@@ -6,7 +6,7 @@ export function inferProvider(model: string): "google" | "anthropic" {
   // Internal Antigravity Claude models must be routed to Google
   if (m === "claude-sonnet-4-5") return "google";
   
-  if (m.includes("claude") || m.includes("anthropic")) return "google";
+  if (m.includes("claude") || m.includes("anthropic") || m.includes("opus")) return "google";
   if (m.includes("gemini") || m.includes("google") || m.includes("palm") || m.includes("codey")) return "google";
   return "google";
 }

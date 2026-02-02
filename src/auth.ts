@@ -78,33 +78,56 @@ export async function getGoogleUserInfo(accessToken: string): Promise<{ email: s
 
 export async function getProjectId(accessToken: string): Promise<string> {
   const url = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist";
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { 
-      "Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } })
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    console.error("loadCodeAssist failed", text);
-    // Fallback? Reference code uses "bamboo-precept-lgxtn" as final fallback.
-    // Let's try to return that fallback if request fails, to avoid total blocker.
-    // Or throw error?
-    // If this fails, the token might be bad OR the service is down.
-    // Let's throw for now to make it visible.
-    throw new Error(`Failed to loadCodeAssist: ${text}`);
-  }
-
-  const data = await res.json() as any;
-  const projectId = data.cloudaicompanionProject;
   
-  if (!projectId) {
-     // Try fallback
-     return "bamboo-precept-lgxtn";
-  }
+  // Try to use a better User-Agent, though "antigravity" is what the plan committed to generically.
+  // Reference uses: antigravity/{version} {os}/{arch}
+  // We don't have easy runtime version/os access in Worker env without more code.
+  // We will use a static one that mimics it slightly better than just "antigravity".
+  const userAgent = "antigravity/0.0.0 worker/unknown";
 
-  return projectId;
+  try {
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { 
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": userAgent
+        },
+        body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } })
+    });
+
+    if (!res.ok) {
+        const text = await res.text();
+        console.warn(`loadCodeAssist failed (status ${res.status}): ${text}. Using fallback project ID.`);
+        return generateMockProjectId();
+    }
+
+    const data = await res.json() as any;
+    const projectId = data.cloudaicompanionProject;
+    
+    if (!projectId) {
+        console.warn("loadCodeAssist returned no Project ID. Using fallback.");
+        return generateMockProjectId();
+    }
+
+    return projectId;
+  } catch (e) {
+      console.warn("Error fetching Project ID:", e);
+      return generateMockProjectId();
+  }
+}
+
+function generateMockProjectId(): string {
+  const adjectives = ["useful", "bright", "swift", "calm", "bold"];
+  const nouns = ["fuze", "wave", "spark", "flow", "core"];
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  
+  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  let randomNum = "";
+  for (let i = 0; i < 5; i++) {
+    randomNum += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  
+  return `${adj}-${noun}-${randomNum}`;
 }
