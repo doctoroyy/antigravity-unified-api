@@ -4,6 +4,7 @@ import * as auth from './auth';
 import * as sessionFn from './session';
 import * as adapter from './adapter';
 import { AUTH_PAGE_HTML, getManualAuthHtml } from './html';
+import { ClaudeStreamAdapter } from './claude_stream';
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   // Ensure sessions loaded
@@ -113,9 +114,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
   // --- 2. API Routes ---
   const isOpenAICompat = path.startsWith("/v1/chat/completions");
-  const isAnthropicCompat = path.startsWith("/v1/complete");
+  const isAnthropicMessages = path.startsWith("/v1/messages");
+  const isAnthropicComplete = path.startsWith("/v1/complete");
   
-  if (!isOpenAICompat && !isAnthropicCompat) {
+  if (!isOpenAICompat && !isAnthropicMessages && !isAnthropicComplete) {
     return new Response("Not found", { status: 404 });
   }
   if (request.method !== "POST") {
@@ -140,9 +142,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     "gemini-2.0-flash": "gemini-3-flash",
     "gemini-flash": "gemini-3-flash",
     "gemini-pro": "gemini-3-pro-high",
-    "gemini-1.5-pro": "gemini-3-pro-high",
-    "claude-3-5-sonnet-20240620": "claude-sonnet-4-5",
-    "claude-3-5-sonnet": "claude-sonnet-4-5"
+    "gemini-1.5-pro": "gemini-3-pro-high"
   };
   
   if (MODEL_MAP[model]) {
@@ -222,15 +222,33 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     const geminiBody: any = {};
     if (isOpenAICompat) {
       geminiBody.contents = adapter.openAIToContents(reqBody.messages as ChatMessage[]);
+    } else if (isAnthropicMessages) {
+       const { contents, systemInstruction } = adapter.anthropicMessagesToContents(reqBody.messages, reqBody.system);
+       geminiBody.contents = contents;
+       if (systemInstruction) geminiBody.systemInstruction = systemInstruction;
+       
+       // Handle Tools
+       if (reqBody.tools) {
+         // Pass through tools (mapping input_schema to parameters if needed?)
+         // Gemini expects { functionDeclarations: [ { name, description, parameters } ] }
+         // Anthropic expects { name, description, input_schema }
+         // We simply map input_schema -> parameters
+         geminiBody.tools = [{
+           functionDeclarations: reqBody.tools.map((t: any) => ({
+             name: t.name,
+             description: t.description,
+             // Note: Gemini strict schema might require specific types. 
+             // We assume simple compatibility for now or pass raw if compliant.
+             parameters: t.input_schema 
+           }))
+         }];
+       }
     } else {
       const prompt = (reqBody.prompt as string) || "";
       geminiBody.contents = adapter.anthropicPromptToContents(prompt);
     }
     
-    if (reqBody.temperature !== undefined) geminiBody.temperature = reqBody.temperature; // Should be in generationConfig?
-    // Standard Gemini API puts these in generationConfig, but top-level might be accepted or ignored?
-    // Actually, std API requires generationConfig.
-    // Let's follow standard Gemini structure for inner request.
+    // generationConfig
     const generationConfig: any = {};
     if (reqBody.temperature !== undefined) generationConfig.temperature = reqBody.temperature;
     if (reqBody.top_p !== undefined) generationConfig.topP = reqBody.top_p;
@@ -246,7 +264,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       request: geminiBody, 
       model: model, 
       userAgent: "antigravity",
-      requestType: "IDE_CHAT"
+      requestType: "IDE_CHAT" // Use IDE_CHAT for internal API
     };
 
     try {
@@ -269,12 +287,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return new Response(JSON.stringify({ 
           error: "Upstream error", 
           details: errText, 
-          status: upstreamResp.status,
-          debug: {
-            project_id: sessionAcc.project_id,
-            model_used: model,
-            mapped_model_in_body: model // or whatever we passed
-          }
+          status: upstreamResp.status
         }), { status: upstreamResp.status });
       }
 
@@ -290,6 +303,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         if (!reader) return new Response("No response body", { status: 500 });
 
         (async () => {
+          // If handling /v1/messages, use specialized adapter
+          let claudeStreamAdapter = isAnthropicMessages ? new ClaudeStreamAdapter(writer, model) : null;
+          
           let buffer = "";
           try {
              // Initial Role Chunk for OpenAI Compat
@@ -323,11 +339,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
                  try {
                    const json = JSON.parse(dataPart);
-                   // Unwrap
                    let payload = json.response ? json.response : json;
                    
-                   // Convert to OpenAI if needed
-                   if (isOpenAICompat && payload.candidates) {
+                   if (claudeStreamAdapter) {
+                      // Delegate to Claude Stream Adapter
+                      await claudeStreamAdapter.handleGeminiChunk(payload);
+                   } else if (isOpenAICompat && payload.candidates) {
+                      // ... existing OpenAI logic ...
                       const text = adapter.contentToText(payload.candidates[0].content);
                       if (text) {
                         const chunk = {
@@ -337,19 +355,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
                         await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
                       }
                    } else {
-                      // Pass through (unwrapped)
+                      // Pass through (unwrapped) for others
                       await writer.write(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
                    }
                  } catch (e) {
-                   // Just write raw if parse fails
-                   await writer.write(encoder.encode(`${line}\n\n`));
+                   if (!claudeStreamAdapter) await writer.write(encoder.encode(`${line}\n\n`));
                  }
                }
              }
              if (isOpenAICompat) await writer.write(encoder.encode("data: [DONE]\n\n"));
           } catch(e) {
              console.error("Stream error", e);
-             await writer.write(encoder.encode(`data: {"error": "Stream error"}\n\n`));
+             if (!claudeStreamAdapter) await writer.write(encoder.encode(`data: {"error": "Stream error"}\n\n`));
           } finally {
              await writer.close();
           }
@@ -368,9 +385,23 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         if (isOpenAICompat && payload.candidates) {
            const text = adapter.contentToText(payload.candidates[0].content);
            finalResp = adapter.formatOpenAIResponse(text, model);
-        } else if (isAnthropicCompat && payload.candidates) {
+        } else if (isAnthropicComplete && payload.candidates) {
            const text = adapter.contentToText(payload.candidates[0].content);
            finalResp = adapter.formatAnthropicResponse(text, model);
+        } else if (isAnthropicMessages && payload.candidates) {
+           // Basic Sync Support for Messages
+           const text = adapter.contentToText(payload.candidates[0]?.content);
+           // Needs full message object structure
+            finalResp = {
+                id: payload.responseId || "msg_" + Math.random().toString(36).slice(2),
+                type: "message",
+                role: "assistant", 
+                model: model,
+                content: [{ type: "text", text: text }],
+                stop_reason: payload.candidates[0]?.finishReason === "MAX_TOKENS" ? "max_tokens" : "end_turn",
+                stop_sequence: null,
+                usage: { input_tokens: 0, output_tokens: payload.usageMetadata?.candidatesTokenCount || 0 }
+            };
         }
         return new Response(JSON.stringify(finalResp), { headers: { "Content-Type": "application/json" } });
       }
@@ -380,10 +411,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
   }
 
-  // --- Anthropic Logic (unchanged mostly) ---
+  // --- Anthropic Logic (Passthrough) ---
   if (provider === "anthropic") {
     const anthropicAcc = session as AnthropicSession;
-    const upstreamUrl = "https://api.anthropic.com/v1/complete";
+    let upstreamUrl = "https://api.anthropic.com/v1/complete";
+    if (isAnthropicMessages) upstreamUrl = "https://api.anthropic.com/v1/messages";
+
     const upstreamHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       "x-api-key": anthropicAcc.api_key,
@@ -391,21 +424,27 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     };
     if (streamRequested) upstreamHeaders["Accept"] = "text/event-stream";
 
-    let promptStr: string;
-    if (isOpenAICompat) {
-      promptStr = adapter.messagesToAnthropicPrompt(reqBody.messages as ChatMessage[]);
-    } else {
-      promptStr = reqBody.prompt as string;
-      if (!promptStr.trim().startsWith("Human:")) promptStr = `Human: ${promptStr}\n\nAssistant: `;
-    }
+    // ... (rest of Anthropic passthrough logic is cleaner if we just forward body) ...
+    // But we need to handle mapping if it was transformed. For strict passthrough we trust client.
+    let postData = reqBody;
     
-    const postData = {
-      prompt: promptStr, model,
-      max_tokens_to_sample: reqBody.max_tokens_to_sample ?? reqBody.max_tokens ?? 300,
-      temperature: reqBody.temperature ?? 1,
-      stream: streamRequested,
-      stop_sequences: reqBody.stop_sequences ?? []
-    };
+    // Legacy complete
+    if (isAnthropicComplete) {
+         let promptStr: string;
+         if (isOpenAICompat) {
+           promptStr = adapter.messagesToAnthropicPrompt(reqBody.messages as ChatMessage[]);
+         } else {
+           promptStr = reqBody.prompt as string;
+           if (!promptStr.trim().startsWith("Human:")) promptStr = `Human: ${promptStr}\n\nAssistant: `;
+         }
+         postData = {
+           prompt: promptStr, model,
+           max_tokens_to_sample: reqBody.max_tokens_to_sample ?? reqBody.max_tokens ?? 300,
+           temperature: reqBody.temperature ?? 1,
+           stream: streamRequested,
+           stop_sequences: reqBody.stop_sequences ?? []
+         };
+    }
 
     try {
       const upstreamResp = await fetch(upstreamUrl, {
@@ -421,9 +460,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
          return new Response(upstreamResp.body, { headers: { "Content-Type": "text/event-stream" } });
       } else {
          const json = await upstreamResp.json() as any;
-         const text = json.completion || "";
-         const finalResp = isOpenAICompat ? adapter.formatOpenAIResponse(text, model) : adapter.formatAnthropicResponse(text, model);
-         return new Response(JSON.stringify(finalResp), { headers: { "Content-Type": "application/json" } });
+         // If it's pure passthrough (Messages), return direct.
+         if (isAnthropicMessages) {
+             return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
+         } else {
+             const text = json.completion || "";
+             const finalResp = isOpenAICompat ? adapter.formatOpenAIResponse(text, model) : adapter.formatAnthropicResponse(text, model);
+             return new Response(JSON.stringify(finalResp), { headers: { "Content-Type": "application/json" } });
+         }
       }
     } catch (e: any) {
        return new Response(`{"error":"Anthropic fetch failed: ${e.message}"}`, { status: 502 });

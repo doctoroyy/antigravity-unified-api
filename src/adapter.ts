@@ -6,7 +6,7 @@ export function inferProvider(model: string): "google" | "anthropic" {
   // Internal Antigravity Claude models must be routed to Google
   if (m === "claude-sonnet-4-5") return "google";
   
-  if (m.includes("claude") || m.includes("anthropic")) return "anthropic";
+  if (m.includes("claude") || m.includes("anthropic")) return "google";
   if (m.includes("gemini") || m.includes("google") || m.includes("palm") || m.includes("codey")) return "google";
   return "google";
 }
@@ -98,4 +98,75 @@ export function formatAnthropicResponse(content: string, model: string) {
     model,
     truncated: false
   };
+}
+
+export function anthropicMessagesToContents(
+  messages: any[], 
+  system?: string
+): { contents: any[], systemInstruction?: any } {
+  const contents: any[] = [];
+  const toolIdMap = new Map<string, string>(); // id -> name
+
+  // 1. Build Tool ID Map from history (to resolve tool_result names)
+  for (const msg of messages) {
+    if (msg.role === "assistant") {
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "tool_use") {
+            toolIdMap.set(block.id, block.name);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Convert Messages
+  for (const msg of messages) {
+    const role = msg.role === "assistant" ? "model" : "user";
+    const parts: any[] = [];
+
+    if (typeof msg.content === "string") {
+      parts.push({ text: msg.content });
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          parts.push({ text: block.text });
+        } else if (block.type === "thinking") {
+           // Map to text part with thought=true
+           parts.push({ text: block.thinking, thought: true, thoughtSignature: block.signature });
+        } else if (block.type === "image") {
+          parts.push({
+            inlineData: {
+              mimeType: block.source.media_type,
+              data: block.source.data
+            }
+          });
+        } else if (block.type === "tool_use") {
+          parts.push({
+            functionCall: {
+              name: block.name,
+              args: block.input // Gemini uses 'args', Anthropic uses 'input'
+            }
+          });
+        } else if (block.type === "tool_result") {
+          const toolName = toolIdMap.get(block.tool_use_id);
+          if (toolName) {
+            let responseContent = block.content;
+            parts.push({
+              functionResponse: {
+                name: toolName,
+                response: { content: responseContent } 
+              }
+            });
+          }
+        }
+      }
+    }
+    
+    if (parts.length > 0) {
+      contents.push({ role, parts });
+    }
+  }
+  
+  return { contents, systemInstruction: system ? { parts: [{ text: system }] } : undefined };
 }
