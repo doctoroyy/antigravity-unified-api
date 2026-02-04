@@ -100,6 +100,50 @@ export function formatAnthropicResponse(content: string, model: string) {
   };
 }
 
+// Claude Messages API format (for /v1/messages)
+export function formatClaudeMessagesResponse(content: string, model: string, inputTokens = 0, outputTokens = 0) {
+  return {
+    id: "msg_" + Math.random().toString(36).slice(2),
+    type: "message",
+    role: "assistant",
+    content: [
+      { type: "text", text: content }
+    ],
+    model,
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens
+    }
+  };
+}
+
+// Map Claude official model names to internal names
+export function mapClaudeModelName(model: string): string {
+  const mapping: Record<string, string> = {
+    // Claude 3.5 Sonnet versions
+    "claude-3-5-sonnet-20241022": "claude-sonnet-4-5",
+    "claude-3-5-sonnet-latest": "claude-sonnet-4-5",
+    "claude-3-5-sonnet@20241022": "claude-sonnet-4-5",
+    
+    // Claude 3 Opus versions
+    "claude-3-opus-20240229": "claude-opus-4-5-thinking",
+    "claude-3-opus-latest": "claude-opus-4-5-thinking",
+    "claude-3-opus@20240229": "claude-opus-4-5-thinking",
+    
+    // Claude 4.5 versions (if they exist)
+    "claude-sonnet-4-5-20250514": "claude-sonnet-4-5",
+    "claude-opus-4-5-20250514": "claude-opus-4-5-thinking",
+    
+    // Anthropic-style names
+    "claude-3-5-sonnet": "claude-sonnet-4-5",
+    "claude-3-opus": "claude-opus-4-5-thinking",
+  };
+  
+  return mapping[model] || model;
+}
+
 export function anthropicMessagesToContents(
   messages: any[], 
   system?: string

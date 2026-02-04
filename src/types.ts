@@ -1,6 +1,7 @@
 
 export interface Env {
   SESSIONS: KVNamespace;
+  ADMIN_PASSWORD?: string;
 }
 
 export interface GoogleSession {

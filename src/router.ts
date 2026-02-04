@@ -3,8 +3,25 @@ import { Env, GoogleSession, AnthropicSession, ChatMessage, ContentObject } from
 import * as auth from './auth';
 import * as sessionFn from './session';
 import * as adapter from './adapter';
-import { AUTH_PAGE_HTML, getManualAuthHtml } from './html';
+import { AUTH_PAGE_HTML, getManualAuthHtml, ADMIN_LOGIN_HTML, getAdminPanelHtml } from './html';
 import { ClaudeStreamAdapter } from './claude_stream';
+import { CODE_ASSIST_ENDPOINT, CODE_ASSIST_ENDPOINT_FALLBACKS, CODE_ASSIST_HEADERS } from './constants';
+import { getModelFamily } from './model_mapping';
+import * as apikeys from './apikeys';
+
+// Simple session token for admin (stored in memory, reset on worker restart)
+const adminSessions = new Set<string>();
+
+// Helper to parse cookies from request
+function getCookie(request: Request, name: string): string | null {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = cookieHeader.split(";").map(c => c.trim());
+  for (const cookie of cookies) {
+    const [key, value] = cookie.split("=");
+    if (key === name) return value;
+  }
+  return null;
+}
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   // Ensure sessions loaded
@@ -15,7 +32,90 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   const url = new URL(request.url);
   const path = url.pathname;
 
-  // --- 1. Auth & Callback ---
+  // --- 0. Admin Routes (No API key required) ---
+  if (path === "/admin" || path === "/admin/") {
+    const sessionToken = getCookie(request, "admin_session");
+    if (!sessionToken || !adminSessions.has(sessionToken)) {
+      return new Response(ADMIN_LOGIN_HTML, { status: 200, headers: { "Content-Type": "text/html; charset=UTF-8" } });
+    }
+    const keys = await apikeys.listApiKeys(env);
+    return new Response(getAdminPanelHtml(keys), { status: 200, headers: { "Content-Type": "text/html; charset=UTF-8" } });
+  }
+
+  if (path === "/admin/login" && request.method === "POST") {
+    const formData = await request.formData();
+    const password = formData.get("password")?.toString() || "";
+    const adminPassword = env.ADMIN_PASSWORD || "antigravity2026";
+    
+    if (password === adminPassword) {
+      const sessionToken = crypto.randomUUID();
+      adminSessions.add(sessionToken);
+      return new Response(null, {
+        status: 302,
+        headers: {
+          "Location": "/admin",
+          "Set-Cookie": `admin_session=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`
+        }
+      });
+    }
+    return new Response(ADMIN_LOGIN_HTML.replace("</form>", '<div class="error">Invalid password</div></form>'), { 
+      status: 401, 
+      headers: { "Content-Type": "text/html; charset=UTF-8" } 
+    });
+  }
+
+  if (path === "/admin/logout") {
+    const sessionToken = getCookie(request, "admin_session");
+    if (sessionToken) adminSessions.delete(sessionToken);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        "Location": "/admin",
+        "Set-Cookie": "admin_session=; Path=/; Max-Age=0"
+      }
+    });
+  }
+
+  if (path === "/admin/keys") {
+    const sessionToken = getCookie(request, "admin_session");
+    if (!sessionToken || !adminSessions.has(sessionToken)) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
+    if (request.method === "POST") {
+      const formData = await request.formData();
+      const name = formData.get("name")?.toString() || "Unnamed Key";
+      const { apiKey, rawKey } = await apikeys.createApiKey(env, name);
+      const keys = await apikeys.listApiKeys(env);
+      return new Response(getAdminPanelHtml(keys, rawKey), { 
+        status: 200, 
+        headers: { "Content-Type": "text/html; charset=UTF-8" } 
+      });
+    }
+
+    if (request.method === "GET") {
+      const keys = await apikeys.listApiKeys(env);
+      return new Response(JSON.stringify(keys), { 
+        status: 200, 
+        headers: { "Content-Type": "application/json" } 
+      });
+    }
+  }
+
+  if (path.startsWith("/admin/keys/") && request.method === "DELETE") {
+    const sessionToken = getCookie(request, "admin_session");
+    if (!sessionToken || !adminSessions.has(sessionToken)) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    const keyId = path.split("/admin/keys/")[1];
+    const deleted = await apikeys.deleteApiKey(env, keyId);
+    return new Response(JSON.stringify({ deleted }), { 
+      status: deleted ? 200 : 404, 
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+
+  // --- 1. Auth & Callback (No API key required) ---
   if (path === "/auth") {
     if (request.method === "GET") {
       return new Response(AUTH_PAGE_HTML, { status: 200, headers: { "Content-Type": "text/html; charset=UTF-8" } });
@@ -112,14 +212,46 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
   }
 
-  // --- 2. API Routes ---
+  // --- 2. API Routes (API key required) ---
   const isOpenAICompat = path.startsWith("/v1/chat/completions");
   const isAnthropicMessages = path.startsWith("/v1/messages");
   const isAnthropicComplete = path.startsWith("/v1/complete");
+  const isImageGeneration = path.startsWith("/v1/images/generations");
   
-  if (!isOpenAICompat && !isAnthropicMessages && !isAnthropicComplete) {
+  if (!isOpenAICompat && !isAnthropicMessages && !isAnthropicComplete && !isImageGeneration) {
     return new Response("Not found", { status: 404 });
   }
+
+  // API Key Validation
+  const authHeader = request.headers.get("Authorization") || "";
+  const xApiKey = request.headers.get("x-api-key") || "";
+  let apiKey = "";
+  
+  if (authHeader.startsWith("Bearer ")) {
+    apiKey = authHeader.slice(7);
+  } else if (xApiKey) {
+    apiKey = xApiKey;
+  }
+
+  // Skip validation if key starts with sk-ag- (our keys) - validate it
+  // Pass-through if it's a native Anthropic/OpenAI key format for direct use
+  if (apiKey.startsWith("sk-ag-")) {
+    const validKey = await apikeys.validateApiKey(env, apiKey);
+    if (!validKey) {
+      return new Response(JSON.stringify({ error: "Invalid API key" }), { 
+        status: 401, 
+        headers: { "Content-Type": "application/json" } 
+      });
+    }
+    console.log(`[Auth] API key validated: ${validKey.name} (${validKey.keyPrefix})`);
+  } else if (!apiKey) {
+    return new Response(JSON.stringify({ error: "Missing API key. Use Authorization: Bearer sk-ag-xxx or x-api-key header" }), { 
+      status: 401, 
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+  // If apiKey exists but doesn't start with sk-ag-, pass through (allows direct Anthropic/OpenAI keys)
+
   if (request.method !== "POST") {
      return new Response("Method not allowed", { status: 405 });
   }
@@ -139,10 +271,20 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   // Model Mapping for Internal API
   console.log(`[Router] Resolving model for: ${model}`);
   const originalModel = model;
+  
+  // Map Claude official model names (for /v1/messages compatibility)
+  if (isAnthropicMessages) {
+    model = adapter.mapClaudeModelName(model);
+    if (model !== originalModel) {
+      console.log(`[Router] Claude model mapped: ${originalModel} -> ${model}`);
+    }
+  }
+  
+  // Apply general model mapping
   const mappedModel = (await import('./model_mapping')).resolveModel(model);
   
-  if (mappedModel !== originalModel) {
-    console.log(`[Router] Mapping model ${originalModel} -> ${mappedModel}`);
+  if (mappedModel !== model) {
+    console.log(`[Router] Model mapped: ${model} -> ${mappedModel}`);
     model = mappedModel;
   }
 
@@ -209,10 +351,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
 
     // 3. Prepare Internal Request
-    const internalBaseUrl = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal";
     const method = streamRequested ? "streamGenerateContent" : "generateContent";
-    let upstreamUrl = `${internalBaseUrl}:${method}`;
-    if (streamRequested) upstreamUrl += "?alt=sse";
+    const buildUrl = (endpoint: string) => {
+      let url = `${endpoint}/v1internal:${method}`;
+      if (streamRequested) url += "?alt=sse";
+      return url;
+    };
 
     // Transform to Gemini Format
     const geminiBody: any = {};
@@ -239,6 +383,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
            }))
          }];
        }
+    } else if (isImageGeneration) {
+      // Image Generation Request
+      const prompt = reqBody.prompt || "";
+      geminiBody.contents = [{ role: "user", parts: [{ text: prompt }] }];
+      // You might interpret `n` or `size`, but widely we just pass the prompt for now
+      // The model 'gemini-3-pro-image' handles the rest.
     } else {
       const prompt = (reqBody.prompt as string) || "";
       geminiBody.contents = adapter.anthropicPromptToContents(prompt);
@@ -267,32 +417,82 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${accessToken}`,
-        "User-Agent": "antigravity"
+        "Accept": streamRequested ? "text/event-stream" : "application/json",
+        ...CODE_ASSIST_HEADERS
       };
 
-      // [New] Inject Beta Headers for Thinking + Tools (Legacy Reference Support)
-      if (reqBody.tools && (model.includes("thinking") || (reqBody.thinking as any)?.type === "enabled")) {
-           console.log(`[Google] Injecting anthropic-beta header for thinking + tools`);
-           headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+      // Inject Beta Headers for Claude thinking models
+      const modelFamily = getModelFamily(model);
+      if (modelFamily === "claude" && model.includes("thinking")) {
+        console.log(`[Google] Injecting anthropic-beta header for Claude thinking model`);
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
       }
 
-      const upstreamResp = await fetch(upstreamUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(wrappedBody)
-      });
+      // Endpoint fallback: try daily -> autopush -> prod
+      let upstreamResp: Response | null = null;
+      let lastError = "";
+      for (const endpoint of CODE_ASSIST_ENDPOINT_FALLBACKS) {
+        const upstreamUrl = buildUrl(endpoint);
+        console.log(`[Google] Trying endpoint: ${endpoint}`);
+        
+        try {
+          upstreamResp = await fetch(upstreamUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(wrappedBody)
+          });
 
-      if (!upstreamResp.ok) {
-        const errText = await upstreamResp.text();
-        console.error(`[Google] Upstream error: ${upstreamResp.status} - ${errText}`);
-        if (upstreamResp.status === 401) {
-             await env.SESSIONS.delete(`google:${sessionAcc.email}`);
+          if (upstreamResp.ok || upstreamResp.status < 500) {
+            // Success or client error (4xx) - don't retry
+            break;
+          }
+          lastError = await upstreamResp.text();
+          console.warn(`[Google] Endpoint ${endpoint} failed: ${upstreamResp.status} - ${lastError}`);
+        } catch (e: any) {
+          lastError = e.message;
+          console.warn(`[Google] Endpoint ${endpoint} fetch error: ${e.message}`);
         }
+      }
+
+      if (!upstreamResp || !upstreamResp.ok) {
+        const errText = lastError || (upstreamResp ? await upstreamResp.text() : "All endpoints failed");
+        const status = upstreamResp?.status || 503;
+        console.error(`[Google] Upstream error: ${status} - ${errText}`);
+        
+        // Handle 401 (unauthorized) - delete session
+        if (status === 401) {
+          await env.SESSIONS.delete(`google:${sessionAcc.email}`);
+        }
+        
+        // Handle 429 (rate limit) or 5xx (server error) - block session and suggest retry
+        if (status === 429 || status >= 500) {
+          const blockDuration = status === 429 ? 60 * 1000 : 30 * 1000; // 60s for rate limit, 30s for server error
+          await sessionFn.blockSession(env, "google", sessionAcc, blockDuration);
+          console.log(`[Google] Blocked account ${sessionAcc.email} for ${blockDuration/1000}s due to ${status}`);
+          
+          // Check if there are other available accounts
+          const availableAccounts = sessionFn.sessions.google.filter(
+            acc => !acc.blocked_until || acc.blocked_until <= Date.now()
+          );
+          
+          if (availableAccounts.length > 0) {
+            return new Response(JSON.stringify({ 
+              error: "Rate limited - retry to use another account", 
+              details: `Account ${sessionAcc.email} rate limited. ${availableAccounts.length} other account(s) available. Please retry.`,
+              status: 429,
+              retry: true
+            }), { 
+              status: 429,
+              headers: { "Retry-After": "1" }
+            });
+          }
+        }
+        
         return new Response(JSON.stringify({ 
           error: "Upstream error", 
           details: errText, 
-          status: upstreamResp.status
-        }), { status: upstreamResp.status });
+          status
+        }), { status });
       }
 
       // 4. Handle Response
@@ -406,7 +606,30 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
                 stop_sequence: null,
                 usage: { input_tokens: 0, output_tokens: payload.usageMetadata?.candidatesTokenCount || 0 }
             };
+        } else if (isImageGeneration && payload.candidates) {
+            // Image Generation Response
+            // Expecting inlineData in parts
+            const parts = payload.candidates?.[0]?.content?.parts || [];
+            const imagePart = parts.find((p: any) => p.inlineData);
+            
+            if (imagePart) {
+                finalResp = {
+                    created: Math.floor(Date.now() / 1000),
+                    data: [
+                        { b64_json: imagePart.inlineData.data }
+                    ]
+                };
+            } else {
+                // Check if there is text indicating failure or explicit refusal
+               const text = adapter.contentToText(payload.candidates[0]?.content);
+               if (text) {
+                   // Return as error or textual description if no image
+                   return new Response(JSON.stringify({ error: "Image generation returned text instead of image", details: text }), { status: 500 });
+               }
+               return new Response(JSON.stringify({ error: "No image data received" }), { status: 500 });
+            }
         }
+
         return new Response(JSON.stringify(finalResp), { headers: { "Content-Type": "application/json" } });
       }
 

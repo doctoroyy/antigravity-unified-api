@@ -192,3 +192,121 @@ export function getManualAuthHtml(authUrl: string, redirectPort: number): string
   </div>
 </body></html>`;
 }
+
+export const ADMIN_LOGIN_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Admin Login</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 100%); color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; margin: 0; }
+    .container { width: 100%; max-width: 400px; padding: 40px; background: rgba(255,255,255,0.05); border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); }
+    h1 { text-align: center; margin-bottom: 30px; font-size: 1.5rem; }
+    input { width: 100%; padding: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; font-size: 1rem; margin-bottom: 20px; box-sizing: border-box; }
+    button { width: 100%; padding: 14px; background: #6366f1; color: #fff; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    button:hover { background: #5558e6; }
+    .error { background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.5); padding: 12px; border-radius: 8px; margin-bottom: 20px; color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔐 Admin Login</h1>
+    <form method="POST" action="/admin/login">
+      <input type="password" name="password" placeholder="Admin Password" required autofocus>
+      <button type="submit">Login</button>
+    </form>
+  </div>
+</body>
+</html>`;
+
+export function getAdminPanelHtml(keys: Array<{ id: string; name: string; keyPrefix: string; created_at: number; last_used?: number }>, newKey?: string): string {
+  const keysHtml = keys.map(k => `
+    <tr>
+      <td>${k.name}</td>
+      <td><code>${k.keyPrefix}</code></td>
+      <td>${new Date(k.created_at).toLocaleDateString()}</td>
+      <td>${k.last_used ? new Date(k.last_used).toLocaleDateString() : 'Never'}</td>
+      <td><button onclick="deleteKey('${k.id}')" class="btn-delete">Delete</button></td>
+    </tr>
+  `).join('');
+
+  const newKeyAlert = newKey ? `
+    <div class="new-key-alert">
+      <strong>⚠️ Save this key now - it won't be shown again!</strong>
+      <code class="key-display">${newKey}</code>
+      <button onclick="copyKey('${newKey}')" class="btn-copy">Copy</button>
+    </div>
+  ` : '';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>API Key Management</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 100%); color: #fff; min-height: 100vh; margin: 0; padding: 40px 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { margin-bottom: 30px; }
+    .card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 24px; margin-bottom: 24px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    th { color: rgba(255,255,255,0.6); font-weight: 500; font-size: 0.85rem; }
+    code { background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.9rem; }
+    .btn-delete { background: rgba(239,68,68,0.2); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .btn-delete:hover { background: rgba(239,68,68,0.3); }
+    .create-form { display: flex; gap: 12px; }
+    .create-form input { flex: 1; padding: 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #fff; font-size: 1rem; }
+    .create-form button { padding: 12px 24px; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    .create-form button:hover { background: #5558e6; }
+    .new-key-alert { background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); padding: 16px; border-radius: 12px; margin-bottom: 24px; }
+    .new-key-alert strong { display: block; margin-bottom: 12px; color: #86efac; }
+    .key-display { display: block; padding: 12px; background: rgba(0,0,0,0.3); border-radius: 6px; word-break: break-all; margin-bottom: 12px; }
+    .btn-copy { background: #22c55e; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .logout { color: rgba(255,255,255,0.5); text-decoration: none; }
+    .logout:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🔑 API Key Management</h1>
+      <a href="/admin/logout" class="logout">Logout</a>
+    </div>
+    
+    ${newKeyAlert}
+    
+    <div class="card">
+      <h3 style="margin-bottom: 16px;">Create New Key</h3>
+      <form method="POST" action="/admin/keys" class="create-form">
+        <input type="text" name="name" placeholder="Key name (e.g., 'My App')" required>
+        <button type="submit">Create Key</button>
+      </form>
+    </div>
+    
+    <div class="card">
+      <h3 style="margin-bottom: 16px;">Your API Keys</h3>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Key</th><th>Created</th><th>Last Used</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          ${keysHtml || '<tr><td colspan="5" style="text-align:center;color:rgba(255,255,255,0.5);">No API keys yet</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <script>
+    function deleteKey(id) {
+      if (confirm('Are you sure you want to delete this key?')) {
+        fetch('/admin/keys/' + id, { method: 'DELETE' }).then(() => location.reload());
+      }
+    }
+    function copyKey(key) {
+      navigator.clipboard.writeText(key);
+      alert('Key copied to clipboard!');
+    }
+  </script>
+</body>
+</html>`;
+}

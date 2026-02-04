@@ -67,12 +67,15 @@ export function selectSession(provider: "google" | "anthropic", explicitIndex?: 
   return available[idx];
 }
 
-export function blockSession(provider: "google" | "anthropic", session: GoogleSession | AnthropicSession, durationMs: number) {
+export async function blockSession(env: { SESSIONS: KVNamespace }, provider: "google" | "anthropic", session: GoogleSession | AnthropicSession, durationMs: number) {
   const until = Date.now() + durationMs;
-  // We explicitly cast to handle the specific interface properties
+  // Update in-memory
   if (provider === "google") {
     (session as GoogleSession).blocked_until = until;
+    // Persist to KV
+    await env.SESSIONS.put(`google:${(session as GoogleSession).email}`, JSON.stringify(session));
   } else {
     (session as AnthropicSession).blocked_until = until;
+    await env.SESSIONS.put(`anthropic:${(session as AnthropicSession).id}`, JSON.stringify(session));
   }
 }
